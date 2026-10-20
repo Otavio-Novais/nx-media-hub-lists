@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """Builds lista_limpa.m3u: merges the public iptv-org lists, removes duplicates and hides dead channels.
 
-The check runs from GitHub's servers (USA), not from the Switch's network, so it only hides what is
-clearly dead: DNS/connection errors, timeouts, 404/410 and 5xx, after FAILS_TO_HIDE runs in a row.
-403/401/451 (usually geo-blocking or datacenter IPs being refused) keep the channel.
+The check runs from GitHub's servers (USA), not from the Switch's network. Any HTTP error, DNS/connection
+error or timeout counts as a failure, 401/403/451 included: measured on 2026-10-20, 280 of the ~310 channels
+refused from the runner were refused from Brazil too (the rest were mostly foreign channels).
+A channel is hidden after FAILS_TO_HIDE runs in a row.
 
 Standard library only: python3 check.py
 """
@@ -129,9 +130,9 @@ def fetch(url, headers, limit, byte_range=False):
         with OPENER.open(request, timeout=TIMEOUT) as response:
             return response.status, response.read(limit)
     except urllib.error.HTTPError as e:
-        if e.code in (404, 410) or e.code >= 500:
-            raise Dead(f"HTTP {e.code}")
-        return e.code, b""  # 401/403/451/429...: blocked here, may play on the Switch
+        if e.code in (416, 429):
+            return e.code, b""  # range not served / rate limited by our parallel requests: not a failure
+        raise Dead(f"HTTP {e.code}")
     except http.client.IncompleteRead as e:
         return 200, e.partial  # live stream cut while reading: it was sending data
     except http.client.HTTPException as e:
@@ -162,14 +163,14 @@ def first_uri(playlist, base):
 
 
 def check(entry):
-    """("ok", None), ("blocked", "HTTP 403") when refused here (may play elsewhere) or ("dead", reason)."""
+    """("ok", None) or ("dead", reason)."""
     url, headers = entry.headers()
     try:
         status, body = fetch(url, headers, MAX_PLAYLIST_BYTES)
         # Follow the HLS chain (master -> variant -> segment) so a playlist with dead video is caught
         for _ in range(4):
-            if status >= 400:
-                return "blocked", f"HTTP {status}"
+            if status in (416, 429):
+                return "ok", None
             if not body.lstrip().startswith(b"#EXTM3U"):
                 return "ok", None  # a segment, or a direct stream that answered
             nxt = first_uri(body.decode("utf-8", "replace"), url)
@@ -221,13 +222,11 @@ def main():
         previous = {}
 
     # Only failing channels are stored: the file (and the commit) changes only when that set changes
-    failing, blocked = {}, {}
+    failing = {}
     for e in entries:
         state, reason = results[e.url]
         if state == "dead":
             failing[e.url] = {"name": e.name, "fails": previous.get(e.url, {}).get("fails", 0) + 1, "reason": reason}
-        elif state == "blocked":
-            blocked[e.url] = {"name": e.name, "reason": reason}  # refused from the runner: kept
     hidden = {u for u, s in failing.items() if s["fails"] >= FAILS_TO_HIDE}
     kept = [e for e in entries if e.url not in hidden]
 
@@ -237,12 +236,10 @@ def main():
             f.write("\n".join(e.lines()) + "\n")
     with open(STATUS, "w", encoding="utf-8", newline="\n") as f:
         json.dump({"sources": SOURCES, "channels": len(entries), "kept": len(kept), "hidden": len(hidden),
-                   "blocked": len(blocked), "failing": dict(sorted(failing.items())),
-                   "blocked_here": dict(sorted(blocked.items()))}, f, ensure_ascii=False, indent=1)
+                   "failing": dict(sorted(failing.items()))}, f, ensure_ascii=False, indent=1)
         f.write("\n")
 
-    print(f"{len(kept)} kept, {len(hidden)} hidden, {len(failing) - len(hidden)} failing once, "
-          f"{len(blocked)} blocked here "
+    print(f"{len(kept)} kept, {len(hidden)} hidden, {len(failing) - len(hidden)} failing once "
           f"({time.time() - started:.0f} s)")
 
 

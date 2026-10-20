@@ -18,10 +18,11 @@ https://raw.githubusercontent.com/Otavio-Novais/nx-media-hub-lists/main/lista_li
 4. Repete os que falharam, 30 s depois, para descartar falhas passageiras.
 5. Esconde o canal só depois de **2 execuções seguidas** com falha. Ele volta no primeiro teste que passar.
 
-O teste roda nos servidores do GitHub (EUA), não na sua rede. Por isso só conta como falha o que é claramente
-fora do ar: DNS, conexão recusada, timeout, 404/410 e 5xx. Respostas 401/403/451 (bloqueio por país ou por IP de
-data center) **mantêm** o canal. Se mais de 60% da lista falhar, a execução é descartada (problema de rede do
-runner) e os arquivos não mudam.
+Conta como falha: DNS, conexão recusada, timeout e qualquer erro HTTP, inclusive 401/403/451. O teste roda nos
+servidores do GitHub (EUA), não na sua rede, mas numa medição de 20/10/2026, dos ~310 canais recusados nos EUA,
+280 também eram recusados no Brasil (ex.: SporTV 2 e 3); os que tocavam no Brasil eram quase todos estrangeiros.
+O 429 (limite de requisições) e o 416 (servidor que não aceita leitura parcial) não contam como falha. Se mais de
+60% da lista falhar, a execução é descartada (problema de rede do runner) e os arquivos não mudam.
 
 [`status.json`](status.json) lista os canais com falha, o motivo e quantas execuções seguidas falharam.
 O commit só acontece quando a lista ou esse estado mudam.

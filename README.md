@@ -11,11 +11,15 @@ https://raw.githubusercontent.com/Otavio-Novais/nx-media-hub-lists/main/lista_li
 
 [`check.py`](check.py) (só a biblioteca padrão do Python):
 
-1. Baixa as listas públicas do [iptv-org](https://github.com/iptv-org/iptv): canais em português, esportes e notícias.
+1. Baixa as listas públicas do [iptv-org](https://github.com/iptv-org/iptv): canais em português e inglês, esportes e notícias.
 2. Junta tudo e une os canais repetidos (mesmo link), somando as categorias.
 3. Testa cada canal como o player do app faria: mesmo User-Agent e Referer da lista, sem verificar certificado, e
-   segue o HLS até um segmento de vídeo (playlist → variante → segmento).
-4. Repete os que falharam, 30 s depois, para descartar falhas passageiras.
+   segue o HLS até baixar um segmento de vídeo inteiro (playlist → variante de maior qualidade, a que o mpv
+   escolhe → playlist de áudio, se separada → segmento).
+   - Tudo isso precisa chegar em **até 10 s**, o tempo de espera aceitável na tela de carregamento.
+   - O segmento precisa baixar **mais rápido do que dura** (ex.: 6 s de vídeo em menos de 6 s); senão o vídeo trava.
+4. Repete os que falharam, 30 s depois e com só 8 testes em paralelo, para descartar falhas passageiras e a
+   disputa de banda entre os próprios testes.
 5. Esconde o canal só depois de **2 execuções seguidas** com falha. Ele volta no primeiro teste que passar.
 
 Conta como falha: DNS, conexão recusada, timeout e qualquer erro HTTP, inclusive 401/403/451. O teste roda nos
@@ -30,7 +34,7 @@ O commit só acontece quando a lista ou esse estado mudam.
 ## Rodar localmente
 
 ```bash
-python3 check.py   # ~5 min, grava lista_limpa.m3u e status.json
+python3 check.py   # ~15 min, grava lista_limpa.m3u e status.json
 ```
 
 As fontes, o tempo limite e o número de falhas para esconder ficam no topo do `check.py`.

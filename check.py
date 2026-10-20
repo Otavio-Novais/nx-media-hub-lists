@@ -38,7 +38,7 @@ MIN_SPEED = 1.0         # the segment must download at least this many times fas
 MEASURE_LIMIT = 30      # measuring goes on until here, so slow channels still get numbers
 METRICS = "metrics.json"  # every channel's numbers: uploaded as a workflow artifact, not committed
 WORKERS = 64
-RETRY_WORKERS = 8       # failures are retried with little parallelism: our own downloads must not slow them
+RETRY_WORKERS = 16      # slow channels are retried with little parallelism: our own downloads must not slow them
 DEFAULT_USER_AGENT = "libmpv"  # what the app's player sends when the list sets none
 MAX_PLAYLIST_BYTES = 1 << 20
 MAX_SEGMENT_BYTES = 16 << 20
@@ -281,10 +281,14 @@ def main():
     print(f"{len(entries)} channels after merging {len(SOURCES)} lists")
 
     results = check_all(entries)
+    # Retry the failures (transient ones do not count). Only the slow ones (they have metrics) are
+    # sensitive to our own parallel downloads; errors and timeouts are retried at full parallelism.
     failed = [e for e in entries if results[e.url][0] == "dead"]
-    print(f"first pass: {len(failed)} failed, retrying them")
+    slow = [e for e in failed if results[e.url][2]]
+    print(f"first pass: {len(failed)} failed ({len(slow)} slow), retrying them")
     time.sleep(30)
-    results.update(check_all(failed, RETRY_WORKERS))  # transient failures do not count
+    results.update(check_all([e for e in failed if not results[e.url][2]]))
+    results.update(check_all(slow, RETRY_WORKERS))
 
     failed_count = sum(1 for state, _, _ in results.values() if state == "dead")
     if failed_count > len(entries) * MAX_FAILED_SHARE:

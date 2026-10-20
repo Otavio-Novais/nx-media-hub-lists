@@ -162,27 +162,27 @@ def first_uri(playlist, base):
 
 
 def check(entry):
-    """None when the channel looks alive (or blocked only here), else the failure reason."""
+    """("ok", None), ("blocked", "HTTP 403") when refused here (may play elsewhere) or ("dead", reason)."""
     url, headers = entry.headers()
     try:
         status, body = fetch(url, headers, MAX_PLAYLIST_BYTES)
         # Follow the HLS chain (master -> variant -> segment) so a playlist with dead video is caught
-        for _ in range(3):
-            if status >= 300 or not body.lstrip().startswith(b"#EXTM3U"):
-                return None  # blocked here (403...) or a direct stream that answered: keep it
+        for _ in range(4):
+            if status >= 400:
+                return "blocked", f"HTTP {status}"
+            if not body.lstrip().startswith(b"#EXTM3U"):
+                return "ok", None  # a segment, or a direct stream that answered
             nxt = first_uri(body.decode("utf-8", "replace"), url)
             if not nxt:
-                return "empty playlist"
+                return "dead", "empty playlist"
             url, is_master = nxt
             status, body = fetch(url, headers, MAX_PLAYLIST_BYTES if is_master else 4096, byte_range=not is_master)
-            if not is_master:
-                return None
-        return None
+        return "ok", None
     except Dead as e:
-        return str(e)
+        return "dead", str(e)
     except Exception as e:  # unexpected (bad header value, odd URL...): not proof the channel is dead
         print(f"  check error, kept: {entry.name}: {type(e).__name__}: {e}")
-        return None
+        return "ok", None
 
 
 def check_all(entries):
@@ -204,12 +204,12 @@ def main():
     print(f"{len(entries)} channels after merging {len(SOURCES)} lists")
 
     results = check_all(entries)
-    failed = [e for e in entries if results[e.url]]
+    failed = [e for e in entries if results[e.url][0] == "dead"]
     print(f"first pass: {len(failed)} failed, retrying them")
     time.sleep(30)
     results.update(check_all(failed))  # transient failures do not count
 
-    failed_count = sum(1 for r in results.values() if r)
+    failed_count = sum(1 for state, _ in results.values() if state == "dead")
     if failed_count > len(entries) * MAX_FAILED_SHARE:
         # Most of the list failing means the runner's network is the problem: keep the previous files
         sys.exit(f"{failed_count} of {len(entries)} failed: looks like a network problem, files not updated")
@@ -221,11 +221,13 @@ def main():
         previous = {}
 
     # Only failing channels are stored: the file (and the commit) changes only when that set changes
-    failing = {}
+    failing, blocked = {}, {}
     for e in entries:
-        if results[e.url]:
-            failing[e.url] = {"name": e.name, "fails": previous.get(e.url, {}).get("fails", 0) + 1,
-                              "reason": results[e.url]}
+        state, reason = results[e.url]
+        if state == "dead":
+            failing[e.url] = {"name": e.name, "fails": previous.get(e.url, {}).get("fails", 0) + 1, "reason": reason}
+        elif state == "blocked":
+            blocked[e.url] = {"name": e.name, "reason": reason}  # refused from the runner: kept
     hidden = {u for u, s in failing.items() if s["fails"] >= FAILS_TO_HIDE}
     kept = [e for e in entries if e.url not in hidden]
 
@@ -235,10 +237,12 @@ def main():
             f.write("\n".join(e.lines()) + "\n")
     with open(STATUS, "w", encoding="utf-8", newline="\n") as f:
         json.dump({"sources": SOURCES, "channels": len(entries), "kept": len(kept), "hidden": len(hidden),
-                   "failing": dict(sorted(failing.items()))}, f, ensure_ascii=False, indent=1)
+                   "blocked": len(blocked), "failing": dict(sorted(failing.items())),
+                   "blocked_here": dict(sorted(blocked.items()))}, f, ensure_ascii=False, indent=1)
         f.write("\n")
 
-    print(f"{len(kept)} kept, {len(hidden)} hidden, {len(failing) - len(hidden)} failing once "
+    print(f"{len(kept)} kept, {len(hidden)} hidden, {len(failing) - len(hidden)} failing once, "
+          f"{len(blocked)} blocked here "
           f"({time.time() - started:.0f} s)")
 
 

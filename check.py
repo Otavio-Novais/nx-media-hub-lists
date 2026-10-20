@@ -143,7 +143,8 @@ def merge(sources):
 # ---------- check ----------
 
 def fetch(url, headers, limit, deadline):
-    """GET returning (status, body) before `deadline` (time.monotonic()); raises Dead when gone or too slow."""
+    """GET returning (status, body, final URL after redirects: the base for relative URIs) before `deadline`
+    (time.monotonic()); raises Dead when gone or too slow."""
     remaining = deadline - time.monotonic()
     if remaining <= 0:
         raise Dead(f"slow start (> {MEASURE_LIMIT} s)")
@@ -157,13 +158,13 @@ def fetch(url, headers, limit, deadline):
                 body += chunk
                 if time.monotonic() > deadline:
                     raise Dead(f"slow start (> {MEASURE_LIMIT} s)")
-            return response.status, bytes(body)
+            return response.status, bytes(body), response.geturl()
     except urllib.error.HTTPError as e:
         if e.code in (416, 429):
-            return e.code, b""  # range not served / rate limited by our parallel requests: not a failure
+            return e.code, b"", url  # range not served / rate limited by our parallel requests: not a failure
         raise Dead(f"HTTP {e.code}")
     except http.client.IncompleteRead as e:
-        return 200, e.partial  # live stream cut while reading: it was sending data
+        return 200, e.partial, url  # live stream cut while reading: it was sending data
     except http.client.HTTPException as e:
         raise Dead(type(e).__name__)
     except (socket.timeout, TimeoutError):
@@ -224,7 +225,7 @@ def check(entry):
     started = time.monotonic()
     deadline = started + MEASURE_LIMIT
     try:
-        status, body = fetch(url, headers, MAX_PLAYLIST_BYTES, deadline)
+        status, body, url = fetch(url, headers, MAX_PLAYLIST_BYTES, deadline)
         for _ in range(3):  # master playlist(s) -> media playlist
             if status in (416, 429) or not body.lstrip().startswith(b"#EXTM3U"):
                 return "ok", None, None  # rate limited, or a direct stream that answered
@@ -236,7 +237,7 @@ def check(entry):
                 return "dead", "empty playlist", None
             if audio:
                 fetch(audio, headers, MAX_PLAYLIST_BYTES, deadline)
-            status, body = fetch(url, headers, MAX_PLAYLIST_BYTES, deadline)
+            status, body, url = fetch(url, headers, MAX_PLAYLIST_BYTES, deadline)
         else:
             return "ok", None, None
 
@@ -244,7 +245,7 @@ def check(entry):
         if not segment:
             return "dead", "empty playlist", None
         segment_started = time.monotonic()
-        status, data = fetch(segment, headers, MAX_SEGMENT_BYTES, deadline)
+        status, data, _ = fetch(segment, headers, MAX_SEGMENT_BYTES, deadline)
         now = time.monotonic()
         startup, took = now - started, now - segment_started
         complete = duration and status < 300 and len(data) < MAX_SEGMENT_BYTES
@@ -290,6 +291,10 @@ def main():
     results.update(check_all([e for e in failed if not results[e.url][2]]))
     results.update(check_all(slow, RETRY_WORKERS))
 
+    with open(METRICS, "w", encoding="utf-8") as f:
+        json.dump({e.url: {"name": e.name, "state": results[e.url][0], "reason": results[e.url][1],
+                           **(results[e.url][2] or {})} for e in entries}, f, ensure_ascii=False)
+
     failed_count = sum(1 for state, _, _ in results.values() if state == "dead")
     if failed_count > len(entries) * MAX_FAILED_SHARE:
         # Most of the list failing means the runner's network is the problem: keep the previous files
@@ -314,9 +319,6 @@ def main():
         f.write(header + "\n")
         for e in kept:
             f.write("\n".join(e.lines()) + "\n")
-    with open(METRICS, "w", encoding="utf-8") as f:
-        json.dump({e.url: {"name": e.name, "state": results[e.url][0], "reason": results[e.url][1],
-                           **(results[e.url][2] or {})} for e in entries}, f, ensure_ascii=False)
     with open(STATUS, "w", encoding="utf-8", newline="\n") as f:
         json.dump({"sources": SOURCES, "channels": len(entries), "kept": len(kept), "hidden": len(hidden),
                    "failing": dict(sorted(failing.items()))}, f, ensure_ascii=False, indent=1)

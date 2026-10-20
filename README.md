@@ -1,0 +1,38 @@
+# NX Media Hub: listas
+
+Lista de canais de TV ao vivo do [NX Media Hub](https://github.com/Otavio-Novais/nx-media-hub), já sem os canais
+fora do ar. Atualizada a cada 6 horas pelo GitHub Actions.
+
+```
+https://raw.githubusercontent.com/Otavio-Novais/nx-media-hub-lists/main/lista_limpa.m3u
+```
+
+## Como funciona
+
+[`check.py`](check.py) (só a biblioteca padrão do Python):
+
+1. Baixa as listas públicas do [iptv-org](https://github.com/iptv-org/iptv): canais em português, esportes e notícias.
+2. Junta tudo e une os canais repetidos (mesmo link), somando as categorias.
+3. Testa cada canal como o player do app faria: mesmo User-Agent e Referer da lista, sem verificar certificado, e
+   segue o HLS até um segmento de vídeo (playlist → variante → segmento).
+4. Repete os que falharam, 30 s depois, para descartar falhas passageiras.
+5. Esconde o canal só depois de **2 execuções seguidas** com falha. Ele volta no primeiro teste que passar.
+
+O teste roda nos servidores do GitHub (EUA), não na sua rede. Por isso só conta como falha o que é claramente
+fora do ar: DNS, conexão recusada, timeout, 404/410 e 5xx. Respostas 401/403/451 (bloqueio por país ou por IP de
+data center) **mantêm** o canal. Se mais de 60% da lista falhar, a execução é descartada (problema de rede do
+runner) e os arquivos não mudam.
+
+[`status.json`](status.json) lista os canais com falha, o motivo e quantas execuções seguidas falharam.
+O commit só acontece quando a lista ou esse estado mudam.
+
+## Rodar localmente
+
+```bash
+python3 check.py   # ~5 min, grava lista_limpa.m3u e status.json
+```
+
+As fontes, o tempo limite e o número de falhas para esconder ficam no topo do `check.py`.
+
+Em repositórios públicos, o GitHub desativa workflows agendados depois de 60 dias sem atividade. Se a lista parar
+de atualizar, reative em **Actions → Atualizar lista → Enable workflow**.

@@ -1,0 +1,34 @@
+name: Atualizar lista
+
+on:
+  schedule:
+    - cron: "17 */6 * * *"  # a cada 6 horas
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: lista
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verificar canais
+        run: python3 check.py
+
+      - name: Commit (só se a lista mudou)
+        run: |
+          git add lista_limpa.m3u status.json
+          if git diff --cached --quiet; then
+            echo "Nada mudou"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898299+github-actions[bot]@users.noreply.github.com"
+          git commit -m "Lista: $(jq -r '"\(.kept) canais, \(.hidden) ocultos"' status.json)"
+          git push

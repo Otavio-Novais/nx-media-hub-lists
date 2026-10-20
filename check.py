@@ -34,6 +34,9 @@ STATUS = "status.json"
 
 FAILS_TO_HIDE = 2       # consecutive failed runs (each run already retries its failures once)
 STARTUP_LIMIT = 10      # seconds from the first request to the first video segment, like waiting in the app
+MIN_SPEED = 1.0         # the segment must download at least this many times faster than it plays
+MEASURE_LIMIT = 30      # measuring goes on until here, so slow channels still get numbers
+METRICS = "metrics.json"  # every channel's numbers: uploaded as a workflow artifact, not committed
 WORKERS = 64
 RETRY_WORKERS = 8       # failures are retried with little parallelism: our own downloads must not slow them
 DEFAULT_USER_AGENT = "libmpv"  # what the app's player sends when the list sets none
@@ -143,7 +146,7 @@ def fetch(url, headers, limit, deadline):
     """GET returning (status, body) before `deadline` (time.monotonic()); raises Dead when gone or too slow."""
     remaining = deadline - time.monotonic()
     if remaining <= 0:
-        raise Dead(f"slow start (> {STARTUP_LIMIT} s)")
+        raise Dead(f"slow start (> {MEASURE_LIMIT} s)")
     try:
         with OPENER.open(urllib.request.Request(url, headers=headers), timeout=remaining) as response:
             body = bytearray()
@@ -153,7 +156,7 @@ def fetch(url, headers, limit, deadline):
                     break
                 body += chunk
                 if time.monotonic() > deadline:
-                    raise Dead(f"slow start (> {STARTUP_LIMIT} s)")
+                    raise Dead(f"slow start (> {MEASURE_LIMIT} s)")
             return response.status, bytes(body)
     except urllib.error.HTTPError as e:
         if e.code in (416, 429):
@@ -213,41 +216,50 @@ def last_segment(lines, base):
 
 
 def check(entry):
-    """("ok", None) or ("dead", reason). Mirrors the player: everything until the first segment must arrive
-    within STARTUP_LIMIT, and the segment must download faster than it plays."""
+    """(state, reason, metrics): state "ok" or "dead"; metrics {"startup": s, "speed": x} when the first
+    segment arrived. Mirrors the player: everything until the first segment must arrive within STARTUP_LIMIT
+    and the segment must download MIN_SPEED times faster than it plays. Measures up to MEASURE_LIMIT so the
+    runner's and Brazil's numbers can be compared (see calibrate.py)."""
     url, headers = entry.headers()
-    deadline = time.monotonic() + STARTUP_LIMIT
+    started = time.monotonic()
+    deadline = started + MEASURE_LIMIT
     try:
         status, body = fetch(url, headers, MAX_PLAYLIST_BYTES, deadline)
         for _ in range(3):  # master playlist(s) -> media playlist
             if status in (416, 429) or not body.lstrip().startswith(b"#EXTM3U"):
-                return "ok", None  # rate limited, or a direct stream that answered in time
+                return "ok", None, None  # rate limited, or a direct stream that answered
             lines = [l.strip() for l in body.decode("utf-8", "replace").splitlines()]
             if not any(l.startswith("#EXT-X-STREAM-INF") for l in lines):
                 break
             url, audio = best_variant(lines, url)
             if not url:
-                return "dead", "empty playlist"
+                return "dead", "empty playlist", None
             if audio:
                 fetch(audio, headers, MAX_PLAYLIST_BYTES, deadline)
             status, body = fetch(url, headers, MAX_PLAYLIST_BYTES, deadline)
         else:
-            return "ok", None
+            return "ok", None, None
 
         segment, duration = last_segment(lines, url)
         if not segment:
-            return "dead", "empty playlist"
-        started = time.monotonic()
+            return "dead", "empty playlist", None
+        segment_started = time.monotonic()
         status, data = fetch(segment, headers, MAX_SEGMENT_BYTES, deadline)
-        took = time.monotonic() - started
-        if duration and status < 300 and len(data) < MAX_SEGMENT_BYTES and took > duration:
-            return "dead", f"slow ({took:.1f} s to download {duration:.0f} s of video)"
-        return "ok", None
+        now = time.monotonic()
+        startup, took = now - started, now - segment_started
+        complete = duration and status < 300 and len(data) < MAX_SEGMENT_BYTES
+        speed = duration / max(took, 0.001) if complete else None
+        metrics = {"startup": round(startup, 2), "speed": round(speed, 2) if speed else None}
+        if startup > STARTUP_LIMIT:
+            return "dead", f"slow start ({startup:.1f} s)", metrics
+        if speed is not None and speed < MIN_SPEED:
+            return "dead", f"slow ({took:.1f} s to download {duration:.0f} s of video)", metrics
+        return "ok", None, metrics
     except Dead as e:
-        return "dead", str(e)
+        return "dead", str(e), None
     except Exception as e:  # unexpected (bad header value, odd URL...): not proof the channel is dead
         print(f"  check error, kept: {entry.name}: {type(e).__name__}: {e}")
-        return "ok", None
+        return "ok", None, None
 
 
 def check_all(entries, workers=WORKERS):
@@ -274,7 +286,7 @@ def main():
     time.sleep(30)
     results.update(check_all(failed, RETRY_WORKERS))  # transient failures do not count
 
-    failed_count = sum(1 for state, _ in results.values() if state == "dead")
+    failed_count = sum(1 for state, _, _ in results.values() if state == "dead")
     if failed_count > len(entries) * MAX_FAILED_SHARE:
         # Most of the list failing means the runner's network is the problem: keep the previous files
         sys.exit(f"{failed_count} of {len(entries)} failed: looks like a network problem, files not updated")
@@ -288,7 +300,7 @@ def main():
     # Only failing channels are stored: the file (and the commit) changes only when that set changes
     failing = {}
     for e in entries:
-        state, reason = results[e.url]
+        state, reason, _ = results[e.url]
         if state == "dead":
             failing[e.url] = {"name": e.name, "fails": previous.get(e.url, {}).get("fails", 0) + 1, "reason": reason}
     hidden = {u for u, s in failing.items() if s["fails"] >= FAILS_TO_HIDE}
@@ -298,6 +310,9 @@ def main():
         f.write(header + "\n")
         for e in kept:
             f.write("\n".join(e.lines()) + "\n")
+    with open(METRICS, "w", encoding="utf-8") as f:
+        json.dump({e.url: {"name": e.name, "state": results[e.url][0], "reason": results[e.url][1],
+                           **(results[e.url][2] or {})} for e in entries}, f, ensure_ascii=False)
     with open(STATUS, "w", encoding="utf-8", newline="\n") as f:
         json.dump({"sources": SOURCES, "channels": len(entries), "kept": len(kept), "hidden": len(hidden),
                    "failing": dict(sorted(failing.items()))}, f, ensure_ascii=False, indent=1)

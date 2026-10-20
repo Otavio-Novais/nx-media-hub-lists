@@ -21,6 +21,16 @@ jobs:
       - name: Verificar canais
         run: python3 check.py
 
+      # Tempo até começar e folga de velocidade de cada canal, para calibrar os limites
+      - name: Guardar medições
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: metrics
+          path: metrics.json
+          retention-days: 30
+          if-no-files-found: ignore
+
       - name: Commit (só se a lista mudou)
         run: |
           git add lista_limpa.m3u status.json
@@ -31,4 +41,5 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898299+github-actions[bot]@users.noreply.github.com"
           git commit -m "Lista: $(jq -r '"\(.kept) canais, \(.hidden) ocultos"' status.json)"
+          git pull --rebase
           git push

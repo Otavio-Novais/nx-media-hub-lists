@@ -23,11 +23,11 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
+#"https://iptv-org.github.io/iptv/languages/por.m3u",
+#    "https://iptv-org.github.io/iptv/languages/eng.m3u",
+#    "https://iptv-org.github.io/iptv/categories/sports.m3u",
+#    "https://iptv-org.github.io/iptv/categories/news.m3u",
 SOURCES = [
-    "https://iptv-org.github.io/iptv/languages/por.m3u",
-    "https://iptv-org.github.io/iptv/languages/eng.m3u",
-    "https://iptv-org.github.io/iptv/categories/sports.m3u",
-    "https://iptv-org.github.io/iptv/categories/news.m3u",
     "https://raw.githubusercontent.com/Ramys/Iptv-Brasil-2026/refs/heads/master/CanaisBR02.m3u8",
     "https://raw.githubusercontent.com/Ramys/Iptv-Brasil-2026/refs/heads/master/CanaisBR04.m3u8",
     "https://raw.githubusercontent.com/Ramys/Iptv-Brasil-2026/refs/heads/master/CanaisBR01.m3u8"

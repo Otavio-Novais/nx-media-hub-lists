@@ -1,9 +1,6 @@
 name: Atualizar lista
 
-on:
-  schedule:
-    - cron: "17 */6 * * *"  # a cada 6 horas
-  workflow_dispatch:
+on
 
 permissions:
   contents: write
